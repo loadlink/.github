@@ -1,0 +1,115 @@
+name: Branch Name Validation (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      branch_name:
+        required: true
+        type: string
+
+jobs:
+  validate:
+    name: Branch Name Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Branch Naming Convention
+        run: |
+          BRANCH_NAME="${{ inputs.branch_name }}"
+          echo "🔍 Validating branch: $BRANCH_NAME"
+          echo ""
+
+          # Define valid patterns
+          RELEASES_PATTERN="^releases/v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$"
+          HOTFIX_PATTERN="^hotfix-v[0-9]+\.[0-9]+\.[0-9]+$"
+          SUPPORT_PATTERN="^support/v[0-9]+\.[0-9]+\.x$"
+          FEATURE_PATTERN="^feature/[A-Z]+-[0-9]+(_[A-Z]+-[0-9]+)*(_.+)?$"
+
+          # Skip validation for branches that don't need it
+          if [[ ! "$BRANCH_NAME" =~ ^(releases/|hotfix-|support/|feature/) ]]; then
+            echo "✅ Branch does not require validation - skipping"
+            exit 0
+          fi
+
+          # Validate based on branch prefix
+          if [[ "$BRANCH_NAME" =~ ^releases/ ]]; then
+            if [[ "$BRANCH_NAME" =~ $RELEASES_PATTERN ]]; then
+              echo "✅ Valid release branch format"
+              exit 0
+            else
+              echo "❌ Invalid release branch format!"
+              echo ""
+              echo "Current: $BRANCH_NAME"
+              echo "Required: releases/vX.Y.Z-rcN (release candidate suffix required)"
+              echo ""
+              echo "Examples:"
+              echo "  ✅ releases/v2.5.0-rc1"
+              echo "  ✅ releases/v2.5.0-rc2"
+              echo "  ✅ releases/v3.0.0-rc10"
+              echo ""
+              echo "Common mistakes:"
+              echo "  ❌ releases/v2.5.0 (missing -rcN suffix)"
+              echo "  ❌ releases/2.5.0-rc1 (missing 'v' prefix)"
+              echo "  ❌ releases/v2.5-rc1 (missing patch number)"
+              exit 1
+            fi
+
+          elif [[ "$BRANCH_NAME" =~ ^hotfix- ]]; then
+            if [[ "$BRANCH_NAME" =~ $HOTFIX_PATTERN ]]; then
+              echo "✅ Valid hotfix branch format"
+              exit 0
+            else
+              echo "❌ Invalid hotfix branch format!"
+              echo ""
+              echo "Current: $BRANCH_NAME"
+              echo "Required: hotfix-vX.Y.Z"
+              echo ""
+              echo "Examples:"
+              echo "  ✅ hotfix-v1.0.1"
+              echo ""
+              echo "Common mistakes:"
+              echo "  ❌ hotfix-1.0.1 (missing 'v' prefix)"
+              exit 1
+            fi
+
+          elif [[ "$BRANCH_NAME" =~ ^support/ ]]; then
+            if [[ "$BRANCH_NAME" =~ $SUPPORT_PATTERN ]]; then
+              echo "✅ Valid support branch format"
+              exit 0
+            else
+              echo "❌ Invalid support branch format!"
+              echo ""
+              echo "Current: $BRANCH_NAME"
+              echo "Required: support/vX.Y.x"
+              echo ""
+              echo "Examples:"
+              echo "  ✅ support/v1.0.x"
+              echo ""
+              echo "Common mistakes:"
+              echo "  ❌ support/v1.0 (missing '.x' suffix)"
+              exit 1
+            fi
+
+          elif [[ "$BRANCH_NAME" =~ ^feature/ ]]; then
+            if [[ "$BRANCH_NAME" =~ $FEATURE_PATTERN ]]; then
+              echo "✅ Valid feature branch format"
+              exit 0
+            else
+              echo "❌ Invalid feature branch format!"
+              echo ""
+              echo "Current: $BRANCH_NAME"
+              echo "Required: feature/JIRA-KEY or feature/JIRA-KEY_JIRA-KEY_Description"
+              echo ""
+              echo "Examples:"
+              echo "  ✅ feature/DATINT-8"
+              echo "  ✅ feature/DATINT-8_LLM-999"
+              echo "  ✅ feature/DATINT-8_FixLoginBug"
+              echo "  ✅ feature/DATINT-8_LLM-999_AddNewFeature"
+              echo ""
+              echo "Common mistakes:"
+              echo "  ❌ feature/add-login (missing Jira key)"
+              echo "  ❌ feature/datint-8 (Jira key must be uppercase)"
+              echo "  ❌ feature/DATINT8 (missing hyphen)"
+              echo "  ❌ feature/DATINT-8-LLM-999 (use underscore, not dash as delimiter)"
+              exit 1
+            fi
+          fi

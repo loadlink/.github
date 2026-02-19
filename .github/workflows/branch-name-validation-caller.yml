@@ -1,0 +1,11 @@
+name: Branch Name Validation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+jobs:
+  validate:
+    uses: loadlink/hello-world/.github/workflows/branch-name-validation.yml@main
+    with:
+      branch_name: ${{ github.head_ref }}
