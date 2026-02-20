@@ -1,0 +1,6 @@
+{
+  "name": "Branch Name Validation",
+  "description": "Enforces branch naming: releases/vX.Y.Z-rcN, hotfix-vX.Y.Z, support/vX.Y.x, feature/JIRA-KEY",
+  "iconName": "check-circle",
+  "categories": ["Code Review"]
+}

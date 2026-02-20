@@ -2,6 +2,22 @@
 
 This repository contains reusable GitHub Actions workflows shared across all LoadLink repositories.
 
+## Adding Branch Validation to Your Repository
+
+### 3-Click Setup (Takes 30 seconds)
+
+When your PR is blocked with "Required status check 'validate / Branch Name Validation' is failing":
+
+1. Click **Actions** tab in your repository
+2. Click **New workflow** → Find "Branch Name Validation"
+3. Click **Configure** → Click **Commit changes**
+
+Done! Your PR will now pass validation ✅
+
+### What This Does
+
+The workflow automatically validates that your branch name follows our naming conventions. This keeps our repository organized and ensures consistency across all projects.
+
 ## Branch Name Validation
 
 The `branch-name-validation.yml` workflow enforces branch naming conventions:
@@ -51,3 +67,13 @@ When adding new reusable workflows to this repository:
 2. Use `workflow_call` trigger for reusable workflows
 3. Document usage in this README
 4. Test in a single repository before org-wide deployment
+
+## Need Help?
+
+**Common Issues:**
+
+- **Can't find the workflow template?** Make sure you're looking in the Actions tab, not the Code tab. Click "New workflow" and search for "Branch Name Validation".
+- **Branch name still failing validation?** Check that your branch name exactly matches one of the supported patterns above. Common mistakes include missing the `-rc` suffix on release branches or using dashes instead of underscores in feature branches.
+- **Workflow not running?** Ensure the workflow file is committed to your default branch (usually `main` or `master`).
+
+**Still stuck?** Contact your team lead or open an issue in this repository.
