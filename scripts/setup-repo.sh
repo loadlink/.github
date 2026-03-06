@@ -45,30 +45,58 @@ if gh api "repos/$REPO/contents/$WORKFLOW_FILE_PATH?ref=main" > /dev/null 2>&1; 
   log "SKIP Step 1: file already exists on main"
 else
   if [[ "$DRY_RUN" == "true" ]]; then
-    log "DRY RUN Step 1: would PUT $WORKFLOW_FILE_PATH to main of $REPO"
+    log "DRY RUN Step 1: would deploy $WORKFLOW_FILE_PATH to main of $REPO"
   else
-    # For empty repos main doesn't exist as a git ref yet; omitting branch
-    # lets GitHub initialise the default branch with this as the first commit.
-    if gh api "repos/$REPO/branches/main" > /dev/null 2>&1; then
+    # Check if the repo has any commits at all.
+    # Empty repos (no branches) need the Git Data API because the Contents API
+    # requires an existing git ref to base the commit on.
+    branch_count=$(gh api "repos/$REPO/branches" --jq 'length' 2>/dev/null || echo "0")
+
+    if [ "${branch_count:-0}" -eq 0 ]; then
+      log "Note Step 1: empty repo — using Git Data API to initialise main"
+
+      # 1. Create blob
+      blob_sha=$(jq -n --arg content "$content" \
+        '{content: $content, encoding: "base64"}' \
+        | gh api "repos/$REPO/git/blobs" --method POST --input - --jq '.sha' 2>&1) \
+        || die "Step 1: could not create blob: $blob_sha"
+
+      # 2. Create tree
+      tree_sha=$(jq -n --arg path "$WORKFLOW_FILE_PATH" --arg sha "$blob_sha" \
+        '{tree: [{path: $path, mode: "100644", type: "blob", sha: $sha}]}' \
+        | gh api "repos/$REPO/git/trees" --method POST --input - --jq '.sha' 2>&1) \
+        || die "Step 1: could not create tree: $tree_sha"
+
+      # 3. Create initial commit (empty parents array = root commit)
+      commit_sha=$(jq -n --arg tree "$tree_sha" \
+        '{message: "ci: add branch name validation workflow", tree: $tree, parents: []}' \
+        | gh api "repos/$REPO/git/commits" --method POST --input - --jq '.sha' 2>&1) \
+        || die "Step 1: could not create commit: $commit_sha"
+
+      # 4. Point refs/heads/main at the new commit
+      if err=$(jq -n --arg sha "$commit_sha" '{ref: "refs/heads/main", sha: $sha}' \
+               | gh api "repos/$REPO/git/refs" --method POST --input - 2>&1); then
+        log "SUCCESS Step 1: initialised main with $WORKFLOW_FILE_PATH"
+      else
+        die "Step 1: could not create main ref: $err"
+      fi
+
+    else
+      # Normal case — repo has commits, use the Contents API
       put_body=$(jq -n \
         --arg message "ci: add branch name validation workflow" \
         --arg content "$content" \
         --arg branch  "main" \
         '{message: $message, content: $content, branch: $branch}')
-    else
-      put_body=$(jq -n \
-        --arg message "ci: add branch name validation workflow" \
-        --arg content "$content" \
-        '{message: $message, content: $content}')
-    fi
 
-    if err=$(echo "$put_body" | gh api "repos/$REPO/contents/$WORKFLOW_FILE_PATH" \
-               --method PUT --input - 2>&1); then
-      log "SUCCESS Step 1: deployed to main"
-    elif echo "$err" | grep -qi "422\|already exist"; then
-      log "SKIP Step 1: race condition — file appeared during deploy, continuing"
-    else
-      die "Step 1 failed for $REPO: $err"
+      if err=$(echo "$put_body" | gh api "repos/$REPO/contents/$WORKFLOW_FILE_PATH" \
+                 --method PUT --input - 2>&1); then
+        log "SUCCESS Step 1: deployed to main"
+      elif echo "$err" | grep -qi "422\|already exist"; then
+        log "SKIP Step 1: race condition — file appeared during deploy, continuing"
+      else
+        die "Step 1 failed for $REPO: $err"
+      fi
     fi
   fi
 fi
