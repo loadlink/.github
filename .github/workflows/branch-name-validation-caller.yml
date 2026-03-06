@@ -6,6 +6,6 @@ on:
 
 jobs:
   validate:
-    uses: loadlink/hello-world/.github/workflows/branch-name-validation.yml@main
+    uses: loadlink/.github/.github/workflows/branch-name-validation.yml@main
     with:
       branch_name: ${{ github.head_ref }}
