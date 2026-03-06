@@ -1,0 +1,73 @@
+name: Repo Setup Automation
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      single_repo:
+        description: 'Run against a single repo (e.g. loadlink/my-repo). Leave empty to process all.'
+        required: false
+        type: string
+        default: ''
+      dry_run:
+        description: 'Dry run mode — log actions without making changes'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  ORG: loadlink
+  RULESET_ID: '13000051'
+  WORKFLOW_FILE_PATH: .github/workflows/branch-name-validation-caller.yml
+  PR_BRANCH: chore/add-branch-name-validation
+  GH_TOKEN: ${{ secrets.REPO_SETUP_TOKEN }}
+
+jobs:
+  discover-repos:
+    name: Discover repos
+    runs-on: ubuntu-latest
+    outputs:
+      repos: ${{ steps.get-repos.outputs.repos }}
+    steps:
+      - name: Discover org repos
+        id: get-repos
+        run: |
+          single_repo="${{ inputs.single_repo }}"
+
+          if [[ -n "$single_repo" ]]; then
+            repos=$(jq -nc --arg r "$single_repo" '[$r]')
+          else
+            repos=$(gh api "orgs/$ORG/repos" \
+              --paginate \
+              --jq '[.[] | select(
+                .archived == false and
+                .fork == false and
+                .name != ".github" and
+                .name != "template-repository"
+              ) | .full_name]' \
+              | jq -sc 'add // []')
+          fi
+
+          echo "repos=$repos" >> "$GITHUB_OUTPUT"
+          echo "Discovered $(echo "$repos" | jq 'length') repo(s): $repos"
+
+  setup-repos:
+    name: Setup ${{ matrix.repo }}
+    needs: discover-repos
+    if: needs.discover-repos.outputs.repos != '[]' && needs.discover-repos.outputs.repos != ''
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        repo: ${{ fromJson(needs.discover-repos.outputs.repos) }}
+      max-parallel: 10
+      fail-fast: false
+    steps:
+      - name: Checkout .github repo
+        uses: actions/checkout@v4
+
+      - name: Run setup script
+        env:
+          MATRIX_REPO: ${{ matrix.repo }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: bash scripts/setup-repo.sh
