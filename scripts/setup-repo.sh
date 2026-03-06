@@ -47,11 +47,20 @@ else
   if [[ "$DRY_RUN" == "true" ]]; then
     log "DRY RUN Step 1: would PUT $WORKFLOW_FILE_PATH to main of $REPO"
   else
-    put_body=$(jq -n \
-      --arg message "ci: add branch name validation workflow" \
-      --arg content "$content" \
-      --arg branch  "main" \
-      '{message: $message, content: $content, branch: $branch}')
+    # For empty repos main doesn't exist as a git ref yet; omitting branch
+    # lets GitHub initialise the default branch with this as the first commit.
+    if gh api "repos/$REPO/branches/main" > /dev/null 2>&1; then
+      put_body=$(jq -n \
+        --arg message "ci: add branch name validation workflow" \
+        --arg content "$content" \
+        --arg branch  "main" \
+        '{message: $message, content: $content, branch: $branch}')
+    else
+      put_body=$(jq -n \
+        --arg message "ci: add branch name validation workflow" \
+        --arg content "$content" \
+        '{message: $message, content: $content}')
+    fi
 
     if err=$(echo "$put_body" | gh api "repos/$REPO/contents/$WORKFLOW_FILE_PATH" \
                --method PUT --input - 2>&1); then
