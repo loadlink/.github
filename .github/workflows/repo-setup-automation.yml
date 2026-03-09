@@ -66,6 +66,9 @@ jobs:
       - name: Checkout .github repo
         uses: actions/checkout@v4
 
+      - name: Debug auth
+        run: gh api user --jq '"Authenticated as: " + .login'
+
       - name: Run setup script
         env:
           MATRIX_REPO: ${{ matrix.repo }}
