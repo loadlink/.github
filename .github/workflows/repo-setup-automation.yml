@@ -21,6 +21,11 @@ env:
   WORKFLOW_FILE_PATH: .github/workflows/branch-name-validation-caller.yml
   PR_BRANCH: chore/add-branch-name-validation
   GH_TOKEN: ${{ secrets.REPO_SETUP_TOKEN }}
+  # Only deploy to repos created on or after this date.
+  # Repos that existed before this date and don't yet have the workflow are
+  # intentionally skipped. Update this date (or use single_repo dispatch) to
+  # backfill specific repos manually.
+  DEPLOY_CUTOFF_DATE: '2026-03-10'
 
 jobs:
   discover-repos:

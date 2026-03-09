@@ -6,10 +6,13 @@
 #   DRY_RUN              "true" | "false"
 #   WORKFLOW_FILE_PATH   e.g. ".github/workflows/branch-name-validation-caller.yml"
 #   PR_BRANCH            e.g. "chore/add-branch-name-validation"
-#   GH_TOKEN             fine-grained PAT scoped to loadlink org (Contents R/W, Pull requests R/W)
+#   GH_TOKEN             fine-grained PAT scoped to loadlink org
+#                        (Contents R/W, Pull requests R/W, Workflows R/W)
 #
 # Steps (in order):
-#   1. Deploy WORKFLOW_FILE_PATH to main   (hard failure)
+#   1. Deploy WORKFLOW_FILE_PATH to main
+#        - Direct commit if allowed; falls back to a PR if main is protected.
+#        - Skips entirely if the repo has no 'main' branch.
 #   2. Open PR to add file to develop      (best-effort — warns, never fails job)
 #
 # Idempotent: every step checks current state before acting.
@@ -18,6 +21,9 @@ set -euo pipefail
 
 REPO="${MATRIX_REPO}"
 DRY_RUN="${DRY_RUN:-false}"
+# Separate branch name for PRs targeting main, to avoid conflicts with the
+# develop PR branch (which is created from a different base commit).
+PR_BRANCH_MAIN="${PR_BRANCH}-to-main"
 
 log()  { echo "[$(date -u +%H:%M:%S)] $*"; }
 warn() { echo "[$(date -u +%H:%M:%S)] WARN: $*" >&2; }
@@ -28,70 +34,88 @@ log "=== Processing $REPO (dry_run=$DRY_RUN) ==="
 local_file="$GITHUB_WORKSPACE/$WORKFLOW_FILE_PATH"
 [[ -f "$local_file" ]] || die "Source file not found at: $local_file"
 
-# Pre-encode file content once — reused in Steps 1 and 2
+# Pre-encode file content once — reused across steps
 content=$(base64 -w 0 "$local_file")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 1: Deploy workflow file to main
-# Hard failure — if this fails the matrix job fails (but fail-fast: false means
-# other repos still run).
-# ─────────────────────────────────────────────────────────────────────────────
-log "--- Step 1: Deploy $WORKFLOW_FILE_PATH to main ---"
-
-if gh api "repos/$REPO/contents/$WORKFLOW_FILE_PATH?ref=main" > /dev/null 2>&1; then
-  log "SKIP Step 1: file already exists on main"
-else
-  if [[ "$DRY_RUN" == "true" ]]; then
-    log "DRY RUN Step 1: would deploy $WORKFLOW_FILE_PATH to main of $REPO"
-  else
-    # Check if the repo has any commits at all.
-    # Empty repos (no branches) need the Git Data API because the Contents API
-    # requires an existing git ref to base the commit on.
-    #
-    # NOTE: || must be OUTSIDE $() to avoid concatenating the error JSON with "0".
-    #       Inside $(): cmd || echo "0" captures both stdout streams into the var.
-    #       Outside $(): the assignment is overwritten only if the command failed.
-    if ! branch_count=$(gh api "repos/$REPO/branches" --jq 'length' 2>/dev/null); then
-      # Branches API failed — check whether this is a token access problem
-      if ! gh api "repos/$REPO" > /dev/null 2>&1; then
-        die "Step 1: REPO_SETUP_TOKEN cannot access $REPO (HTTP 404). Verify the fine-grained PAT uses 'loadlink' as the resource owner and has Contents (R/W) permission."
-      fi
-      branch_count=0
-    fi
-
-    if [ "${branch_count:-0}" -eq 0 ]; then
-      # GitHub's API (Contents and Git Data) rejects all writes to repos with
-      # zero commits. Skip cleanly and let the scheduler retry — once someone
-      # pushes the first commit the repo will be picked up automatically.
-      log "SKIP: $REPO has no commits yet — will retry automatically once initialised"
-      exit 0
-
-    else
-      # Normal case — repo has commits, use the Contents API
-      put_body=$(jq -n \
-        --arg message "ci: add branch name validation workflow" \
-        --arg content "$content" \
-        --arg branch  "main" \
-        '{message: $message, content: $content, branch: $branch}')
-
-      if err=$(echo "$put_body" | gh api "repos/$REPO/contents/$WORKFLOW_FILE_PATH" \
-                 --method PUT --input - 2>&1); then
-        log "SUCCESS Step 1: deployed to main"
-      elif echo "$err" | grep -qi "422\|already exist"; then
-        log "SKIP Step 1: race condition — file appeared during deploy, continuing"
-      else
-        die "Step 1 failed for $REPO: $err"
-      fi
-    fi
-  fi
-fi
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 2: Open PR to add workflow file to develop
+# Helper: open a PR to main when direct commits are blocked by branch protection
 # Best-effort — any failure logs a warning and returns 0.
 # ─────────────────────────────────────────────────────────────────────────────
-log "--- Step 2: Open PR to develop ---"
+setup_main_pr() {
+  # No open PR already
+  pr_count=$(gh pr list \
+    --repo "$REPO" \
+    --head "$PR_BRANCH_MAIN" \
+    --base main \
+    --state open \
+    --json number \
+    --jq 'length' 2>/dev/null || echo "0")
+  if [ "${pr_count:-0}" -gt 0 ]; then
+    log "Step 1: PR to main already open"
+    return 0
+  fi
 
+  # File not already on the PR branch
+  if gh api "repos/$REPO/contents/$WORKFLOW_FILE_PATH?ref=$PR_BRANCH_MAIN" > /dev/null 2>&1; then
+    warn "Step 1: file already on $PR_BRANCH_MAIN but no open PR — may have been merged or closed already"
+    return 0
+  fi
+
+  # Get main HEAD SHA
+  main_sha=$(gh api "repos/$REPO/branches/main" --jq '.commit.sha' 2>/dev/null) || {
+    warn "Step 1: could not get main HEAD SHA — skipping PR fallback"
+    return 0
+  }
+
+  # Create PR branch from main HEAD
+  ref_body=$(jq -n \
+    --arg ref "refs/heads/$PR_BRANCH_MAIN" \
+    --arg sha "$main_sha" \
+    '{ref: $ref, sha: $sha}')
+  echo "$ref_body" | gh api "repos/$REPO/git/refs" \
+    --method POST --input - > /dev/null 2>&1 \
+    || log "Note Step 1: branch $PR_BRANCH_MAIN may already exist, continuing"
+
+  # PUT file onto PR branch
+  pr_put_body=$(jq -n \
+    --arg message "ci: add branch name validation workflow" \
+    --arg content "$content" \
+    --arg branch  "$PR_BRANCH_MAIN" \
+    '{message: $message, content: $content, branch: $branch}')
+
+  echo "$pr_put_body" | gh api "repos/$REPO/contents/$WORKFLOW_FILE_PATH" \
+    --method PUT --input - > /dev/null 2>&1 || {
+    warn "Step 1: could not commit file to $PR_BRANCH_MAIN — skipping PR fallback"
+    return 0
+  }
+
+  # Open PR
+  pr_url=$(gh pr create \
+    --repo "$REPO" \
+    --base main \
+    --head "$PR_BRANCH_MAIN" \
+    --title "ci: add branch name validation workflow" \
+    --body "Adds the branch name validation caller workflow to this repo.
+
+Deployed automatically as part of the loadlink branch protection rollout.
+The workflow calls the centralised reusable workflow in \`loadlink/.github\`." \
+    2>&1) || {
+    warn "Step 1: could not create PR to main: $pr_url"
+    return 0
+  }
+  log "Step 1: PR opened to main (requires review) — $pr_url"
+
+  # Try auto-merge (best-effort — only works if branch protection allows it)
+  gh pr merge "$PR_BRANCH_MAIN" --repo "$REPO" --auto --squash 2>/dev/null \
+    || warn "Step 1: auto-merge not enabled on $REPO/main"
+
+  return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper: open a PR to develop
+# Best-effort — any failure logs a warning and returns 0.
+# ─────────────────────────────────────────────────────────────────────────────
 setup_develop_pr() {
   # 2a. develop branch must exist
   if ! gh api "repos/$REPO/branches/develop" > /dev/null 2>&1; then
@@ -139,8 +163,6 @@ setup_develop_pr() {
     || log "Note Step 2: branch $PR_BRANCH may already exist, continuing"
 
   # 2f. PUT file onto PR branch
-  #     If branch existed from a prior run the file may already be there — include
-  #     its SHA to satisfy the "update" requirement, otherwise omit it (new file).
   existing_sha=$(gh api "repos/$REPO/contents/$WORKFLOW_FILE_PATH?ref=$PR_BRANCH" \
     --jq '.sha' 2>/dev/null || true)
 
@@ -187,6 +209,77 @@ The workflow calls the centralised reusable workflow in \`loadlink/.github\`." \
 
   return 0
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 1: Deploy workflow file to main
+# Hard failure — if this fails the matrix job fails (but fail-fast: false means
+# other repos still run).
+# ─────────────────────────────────────────────────────────────────────────────
+log "--- Step 1: Deploy $WORKFLOW_FILE_PATH to main ---"
+
+if gh api "repos/$REPO/contents/$WORKFLOW_FILE_PATH?ref=main" > /dev/null 2>&1; then
+  log "SKIP Step 1: file already exists on main"
+else
+  if [[ "$DRY_RUN" == "true" ]]; then
+    log "DRY RUN Step 1: would deploy $WORKFLOW_FILE_PATH to main of $REPO"
+  else
+    # Check branch count — skip empty repos and detect access problems.
+    if ! branch_count=$(gh api "repos/$REPO/branches" --jq 'length' 2>/dev/null); then
+      if ! gh api "repos/$REPO" > /dev/null 2>&1; then
+        die "Step 1: REPO_SETUP_TOKEN cannot access $REPO. Verify the fine-grained PAT uses 'loadlink' as the resource owner and has Contents (R/W) and Workflows (R/W) permissions."
+      fi
+      branch_count=0
+    fi
+
+    if [ "${branch_count:-0}" -eq 0 ]; then
+      log "SKIP: $REPO has no commits yet — will retry automatically once initialised"
+      exit 0
+    fi
+
+    # Skip repos that don't use 'main' as their default branch.
+    if ! gh api "repos/$REPO/branches/main" > /dev/null 2>&1; then
+      default_branch=$(gh api "repos/$REPO" --jq '.default_branch' 2>/dev/null || echo "unknown")
+      warn "SKIP: $REPO has no 'main' branch (default branch is '$default_branch') — rename to 'main' to enable this automation"
+      log "=== Done: $REPO ==="
+      exit 0
+    fi
+
+    # Skip repos that predate the deployment cutoff — they don't have the workflow
+    # for intentional reasons (not gitflow, empty, protected main, etc.).
+    # Repos created on or after DEPLOY_CUTOFF_DATE are always processed.
+    if [[ -n "${DEPLOY_CUTOFF_DATE:-}" ]]; then
+      created_at=$(gh api "repos/$REPO" --jq '.created_at' 2>/dev/null || echo "")
+      if [[ -n "$created_at" ]] && [[ "$created_at" < "${DEPLOY_CUTOFF_DATE}" ]]; then
+        log "SKIP: $REPO predates cutoff $DEPLOY_CUTOFF_DATE (created: $created_at) — not deploying to pre-existing repos"
+        log "=== Done: $REPO ==="
+        exit 0
+      fi
+    fi
+
+    put_body=$(jq -n \
+      --arg message "ci: add branch name validation workflow" \
+      --arg content "$content" \
+      --arg branch  "main" \
+      '{message: $message, content: $content, branch: $branch}')
+
+    if err=$(echo "$put_body" | gh api "repos/$REPO/contents/$WORKFLOW_FILE_PATH" \
+               --method PUT --input - 2>&1); then
+      log "SUCCESS Step 1: deployed to main"
+    elif echo "$err" | grep -qi "422\|already exist"; then
+      log "SKIP Step 1: race condition — file appeared during deploy, continuing"
+    elif echo "$err" | grep -qi "409\|Repository rule violations\|must be made through a pull request"; then
+      warn "Step 1: direct push to main is protected — opening PR instead"
+      setup_main_pr
+    else
+      die "Step 1 failed for $REPO: $err"
+    fi
+  fi
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 2: Open PR to add workflow file to develop
+# ─────────────────────────────────────────────────────────────────────────────
+log "--- Step 2: Open PR to develop ---"
 
 setup_develop_pr
 
