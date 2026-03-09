@@ -69,6 +69,15 @@ jobs:
       - name: Debug auth
         run: |
           gh api user --jq '"Authenticated as: " + .login'
+          echo "--- Token diagnostics ---"
+          # x-oauth-scopes header is present for classic PATs; absent for fine-grained
+          # GitHub-Authentication-Token-Expiration is present for fine-grained PATs
+          curl -sI -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/user \
+            | grep -iE "x-oauth-scopes|github-authentication-token-expiration|x-github-sso" \
+            || echo "(no relevant auth headers found)"
+          echo "--- Access check for target repo ---"
+          gh api "repos/loadlink/testrepo3" --jq '"Can read testrepo3: " + .full_name' \
+            || echo "CANNOT read repos/loadlink/testrepo3 — token scope or approval issue"
 
       - name: Run setup script
         env:
