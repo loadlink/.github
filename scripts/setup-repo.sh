@@ -50,7 +50,17 @@ else
     # Check if the repo has any commits at all.
     # Empty repos (no branches) need the Git Data API because the Contents API
     # requires an existing git ref to base the commit on.
-    branch_count=$(gh api "repos/$REPO/branches" --jq 'length' 2>/dev/null || echo "0")
+    #
+    # NOTE: || must be OUTSIDE $() to avoid concatenating the error JSON with "0".
+    #       Inside $(): cmd || echo "0" captures both stdout streams into the var.
+    #       Outside $(): the assignment is overwritten only if the command failed.
+    if ! branch_count=$(gh api "repos/$REPO/branches" --jq 'length' 2>/dev/null); then
+      # Branches API failed — check whether this is a token access problem
+      if ! gh api "repos/$REPO" > /dev/null 2>&1; then
+        die "Step 1: REPO_SETUP_TOKEN cannot access $REPO (HTTP 404). For a fine-grained PAT the resource owner must be the org ('loadlink'), not the personal account ('llgh-service'). Recreate the PAT at: Settings → Developer settings → Fine-grained tokens → select 'loadlink' as the resource owner."
+      fi
+      branch_count=0
+    fi
 
     if [ "${branch_count:-0}" -eq 0 ]; then
       # GitHub's API (Contents and Git Data) rejects all writes to repos with
