@@ -244,6 +244,18 @@ else
       exit 0
     fi
 
+    # Skip repos that predate the deployment cutoff — they don't have the workflow
+    # for intentional reasons (not gitflow, empty, protected main, etc.).
+    # Repos created on or after DEPLOY_CUTOFF_DATE are always processed.
+    if [[ -n "${DEPLOY_CUTOFF_DATE:-}" ]]; then
+      created_at=$(gh api "repos/$REPO" --jq '.created_at' 2>/dev/null || echo "")
+      if [[ -n "$created_at" ]] && [[ "$created_at" < "${DEPLOY_CUTOFF_DATE}" ]]; then
+        log "SKIP: $REPO predates cutoff $DEPLOY_CUTOFF_DATE (created: $created_at) — not deploying to pre-existing repos"
+        log "=== Done: $REPO ==="
+        exit 0
+      fi
+    fi
+
     put_body=$(jq -n \
       --arg message "ci: add branch name validation workflow" \
       --arg content "$content" \
