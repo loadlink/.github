@@ -18,7 +18,6 @@ on:
 
 env:
   ORG: loadlink
-  RULESET_ID: '13000051'
   WORKFLOW_FILE_PATH: .github/workflows/branch-name-validation-caller.yml
   PR_BRANCH: chore/add-branch-name-validation
   GH_TOKEN: ${{ secrets.REPO_SETUP_TOKEN }}
@@ -65,10 +64,6 @@ jobs:
     steps:
       - name: Checkout .github repo
         uses: actions/checkout@v4
-
-      - name: Debug auth
-        run: |
-          gh api user --jq '"Authenticated as: " + .login'
 
       - name: Run setup script
         env:

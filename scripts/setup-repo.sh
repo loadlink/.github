@@ -4,16 +4,13 @@
 # Called by repo-setup-automation.yml with the following env vars injected:
 #   MATRIX_REPO          e.g. "loadlink/my-repo"
 #   DRY_RUN              "true" | "false"
-#   ORG                  e.g. "loadlink"
-#   RULESET_ID           e.g. "13000051"
 #   WORKFLOW_FILE_PATH   e.g. ".github/workflows/branch-name-validation-caller.yml"
 #   PR_BRANCH            e.g. "chore/add-branch-name-validation"
-#   GH_TOKEN             PAT with repo + admin:org scopes
+#   GH_TOKEN             fine-grained PAT scoped to loadlink org (Contents R/W, Pull requests R/W)
 #
 # Steps (in order):
 #   1. Deploy WORKFLOW_FILE_PATH to main   (hard failure)
 #   2. Open PR to add file to develop      (best-effort — warns, never fails job)
-#   3. Add repo to org ruleset             (hard failure)
 #
 # Idempotent: every step checks current state before acting.
 
@@ -57,7 +54,7 @@ else
     if ! branch_count=$(gh api "repos/$REPO/branches" --jq 'length' 2>/dev/null); then
       # Branches API failed — check whether this is a token access problem
       if ! gh api "repos/$REPO" > /dev/null 2>&1; then
-        die "Step 1: REPO_SETUP_TOKEN cannot access $REPO (HTTP 404). For a fine-grained PAT the resource owner must be the org ('loadlink'), not the personal account ('llgh-service'). Recreate the PAT at: Settings → Developer settings → Fine-grained tokens → select 'loadlink' as the resource owner."
+        die "Step 1: REPO_SETUP_TOKEN cannot access $REPO (HTTP 404). Verify the fine-grained PAT uses 'loadlink' as the resource owner and has Contents (R/W) permission."
       fi
       branch_count=0
     fi
@@ -192,49 +189,5 @@ The workflow calls the centralised reusable workflow in \`loadlink/.github\`." \
 }
 
 setup_develop_pr
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 3: Add repo to org ruleset
-# Hard failure — if this fails the matrix job fails.
-# Ordering: runs AFTER Step 1 so the workflow file is in place before the
-# ruleset hard-block is activated for this repo.
-# ─────────────────────────────────────────────────────────────────────────────
-log "--- Step 3: Add $REPO to ruleset $RULESET_ID ---"
-
-repo_id=$(gh api "repos/$REPO" --jq '.id') \
-  || die "Step 3: could not fetch repo metadata for $REPO"
-
-ruleset_json=$(gh api "orgs/$ORG/rulesets/$RULESET_ID") \
-  || die "Step 3: could not fetch ruleset $RULESET_ID"
-
-if echo "$ruleset_json" | \
-     jq -e --argjson id "$repo_id" \
-       '(.conditions.repository_id.repository_ids // []) | index($id) != null' \
-     > /dev/null 2>&1; then
-  log "SKIP Step 3: $REPO already in ruleset"
-else
-  if [[ "$DRY_RUN" == "true" ]]; then
-    log "DRY RUN Step 3: would add repo ID $repo_id to ruleset $RULESET_ID"
-  else
-    # Reconstruct PUT body using only mutable fields (omit id, source, source_type,
-    # created_at, updated_at, node_id which are read-only and rejected by the API).
-    put_body=$(echo "$ruleset_json" | jq --argjson id "$repo_id" '{
-      name:          .name,
-      target:        .target,
-      enforcement:   .enforcement,
-      bypass_actors: (.bypass_actors // []),
-      conditions:    (.conditions | .repository_id.repository_ids += [$id]),
-      rules:         (.rules // [])
-    }')
-
-    if err=$(echo "$put_body" | \
-               gh api "orgs/$ORG/rulesets/$RULESET_ID" \
-                 --method PUT --input - 2>&1); then
-      log "SUCCESS Step 3: added $REPO (id=$repo_id) to ruleset $RULESET_ID"
-    else
-      die "Step 3 failed for $REPO: $err"
-    fi
-  fi
-fi
 
 log "=== Done: $REPO ==="
