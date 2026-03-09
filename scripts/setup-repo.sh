@@ -198,8 +198,16 @@ setup_develop_pr
 # Hard failure — if this fails the matrix job fails.
 # Ordering: runs AFTER Step 1 so the workflow file is in place before the
 # ruleset hard-block is activated for this repo.
+# Repos listed in RULESET_EXCLUDED_REPOS (comma-separated) are skipped here;
+# Steps 1 & 2 still run for them so the workflow file is still deployed.
 # ─────────────────────────────────────────────────────────────────────────────
 log "--- Step 3: Add $REPO to ruleset $RULESET_ID ---"
+
+if echo "${RULESET_EXCLUDED_REPOS:-}" | tr ',' '\n' | grep -qxF "$REPO"; then
+  log "SKIP Step 3: $REPO is in RULESET_EXCLUDED_REPOS — not adding to ruleset"
+  log "=== Done: $REPO ==="
+  exit 0
+fi
 
 repo_id=$(gh api "repos/$REPO" --jq '.id') \
   || die "Step 3: could not fetch repo metadata for $REPO"

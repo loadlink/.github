@@ -22,6 +22,10 @@ env:
   WORKFLOW_FILE_PATH: .github/workflows/branch-name-validation-caller.yml
   PR_BRANCH: chore/add-branch-name-validation
   GH_TOKEN: ${{ secrets.REPO_SETUP_TOKEN }}
+  # Comma-separated repo full names to permanently exclude from the ruleset (Step 3).
+  # The workflow file is still deployed to these repos (Steps 1 & 2 still run).
+  # Example: 'loadlink/repo-a,loadlink/repo-b'
+  RULESET_EXCLUDED_REPOS: ''
 
 jobs:
   discover-repos:
