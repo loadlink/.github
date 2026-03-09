@@ -53,33 +53,11 @@ else
     branch_count=$(gh api "repos/$REPO/branches" --jq 'length' 2>/dev/null || echo "0")
 
     if [ "${branch_count:-0}" -eq 0 ]; then
-      log "Note Step 1: empty repo — using Git Data API to initialise main"
-
-      # 1. Create blob
-      blob_sha=$(jq -n --arg content "$content" \
-        '{content: $content, encoding: "base64"}' \
-        | gh api "repos/$REPO/git/blobs" --method POST --input - --jq '.sha' 2>&1) \
-        || die "Step 1: could not create blob: $blob_sha"
-
-      # 2. Create tree
-      tree_sha=$(jq -n --arg path "$WORKFLOW_FILE_PATH" --arg sha "$blob_sha" \
-        '{tree: [{path: $path, mode: "100644", type: "blob", sha: $sha}]}' \
-        | gh api "repos/$REPO/git/trees" --method POST --input - --jq '.sha' 2>&1) \
-        || die "Step 1: could not create tree: $tree_sha"
-
-      # 3. Create initial commit (empty parents array = root commit)
-      commit_sha=$(jq -n --arg tree "$tree_sha" \
-        '{message: "ci: add branch name validation workflow", tree: $tree, parents: []}' \
-        | gh api "repos/$REPO/git/commits" --method POST --input - --jq '.sha' 2>&1) \
-        || die "Step 1: could not create commit: $commit_sha"
-
-      # 4. Point refs/heads/main at the new commit
-      if err=$(jq -n --arg sha "$commit_sha" '{ref: "refs/heads/main", sha: $sha}' \
-               | gh api "repos/$REPO/git/refs" --method POST --input - 2>&1); then
-        log "SUCCESS Step 1: initialised main with $WORKFLOW_FILE_PATH"
-      else
-        die "Step 1: could not create main ref: $err"
-      fi
+      # GitHub's API (Contents and Git Data) rejects all writes to repos with
+      # zero commits. Skip cleanly and let the scheduler retry — once someone
+      # pushes the first commit the repo will be picked up automatically.
+      log "SKIP: $REPO has no commits yet — will retry automatically once initialised"
+      exit 0
 
     else
       # Normal case — repo has commits, use the Contents API
